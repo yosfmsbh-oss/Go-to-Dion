@@ -1,0 +1,54 @@
+name: Build Android APK
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        run: |
+          ZIP=$(ls *.zip 2>/dev/null | head -1 || true)
+          if [ -n "$ZIP" ]; then unzip -q -o "$ZIP"; fi
+          if [ -f duyoon-android/package.json ]; then echo "PROJ=duyoon-android" >> $GITHUB_ENV
+          elif [ -f package.json ]; then echo "PROJ=." >> $GITHUB_ENV
+          else echo "package.json not found"; ls -R | head -50; exit 1; fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install
+        working-directory: ${{ env.PROJ }}
+        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Add Android
+        working-directory: ${{ env.PROJ }}
+        run: npx cap add android
+      - name: Add icons
+        working-directory: ${{ env.PROJ }}
+        run: cp -r android-res/* android/app/src/main/res/
+      - name: Add permissions
+        working-directory: ${{ env.PROJ }}
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <application#' $M
+          grep -q SCHEDULE_EXACT_ALARM $M || { echo "permissions were not added"; exit 1; }
+      - name: Sync
+        working-directory: ${{ env.PROJ }}
+        run: npx cap sync android
+      - name: Use the fixed signing key
+        working-directory: ${{ env.PROJ }}
+        run: |
+          mkdir -p ~/.android
+          cp debug.keystore ~/.android/debug.keystore
+      - name: Build debug APK
+        working-directory: ${{ env.PROJ }}/android
+        run: chmod +x gradlew && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duyoon-apk
+          path: ${{ env.PROJ }}/android/app/build/outputs/apk/debug/app-debug.apk
