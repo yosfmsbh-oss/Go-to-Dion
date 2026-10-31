@@ -8,13 +8,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Unzip project
+        # يفك ضغط أحدث ملف zip في جذر المستودع ويضع محتوياته في الجذر
         run: |
-          ZIP=$(ls *.zip 2>/dev/null | head -1 || true)
-          if [ -n "$ZIP" ]; then unzip -q -o "$ZIP"; fi
-          if [ -f duyoon-android/package.json ]; then echo "PROJ=duyoon-android" >> $GITHUB_ENV
-          elif [ -f package.json ]; then echo "PROJ=." >> $GITHUB_ENV
-          else echo "package.json not found"; ls -R | head -50; exit 1; fi
+          ZIP=$(for f in *.zip; do [ -f "$f" ] && echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -n | tail -n1 | cut -d' ' -f2-)
+          if [ -z "$ZIP" ]; then
+            [ -f package.json ] || { echo "no zip and no package.json in repo root"; exit 1; }
+            echo "no zip found, using files already in the repo"
+          else
+            echo "Using $ZIP"
+            rm -rf /tmp/proj && mkdir -p /tmp/proj
+            unzip -q -o "$ZIP" -d /tmp/proj
+            PKG=$(find /tmp/proj -name package.json -not -path '*/node_modules/*' | head -n1)
+            [ -n "$PKG" ] || { echo "package.json not found inside $ZIP"; exit 1; }
+            SRC=$(dirname "$PKG")
+            rm -rf "$SRC/.github"
+            cp -a "$SRC"/. ./
+          fi
+          ls -la
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -22,33 +35,27 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - name: Install
-        working-directory: ${{ env.PROJ }}
-        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
-      - name: Add Android
-        working-directory: ${{ env.PROJ }}
-        run: npx cap add android
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - run: npx cap add android
       - name: Add icons
-        working-directory: ${{ env.PROJ }}
         run: cp -r android-res/* android/app/src/main/res/
       - name: Add permissions
-        working-directory: ${{ env.PROJ }}
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <application#' $M
           grep -q SCHEDULE_EXACT_ALARM $M || { echo "permissions were not added"; exit 1; }
-      - name: Sync
-        working-directory: ${{ env.PROJ }}
-        run: npx cap sync android
+      - run: npx cap sync android
       - name: Use the fixed signing key
-        working-directory: ${{ env.PROJ }}
+        # نفس المفتاح في كل بناء => يمكن تحديث التطبيق فوق النسخة القديمة دون حذفها (وبدون فقدان البيانات)
         run: |
           mkdir -p ~/.android
           cp debug.keystore ~/.android/debug.keystore
       - name: Build debug APK
-        working-directory: ${{ env.PROJ }}/android
+        working-directory: android
         run: chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: duyoon-apk
-          path: ${{ env.PROJ }}/android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
